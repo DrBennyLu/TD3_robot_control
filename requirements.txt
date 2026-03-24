@@ -1,0 +1,6 @@
+# Cross-platform: use Python 3.10–3.12 for widest PyTorch wheel support.
+# Python 3.13+: install torch from https://pytorch.org/ (CPU/CUDA) then pip install the rest.
+gymnasium>=0.29.0,<1.0.0
+numpy>=1.24.0,<3.0.0
+pybullet>=3.2.5
+torch>=2.0.0
