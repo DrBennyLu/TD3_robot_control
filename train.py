@@ -11,6 +11,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+try:
+    from tqdm import tqdm  # type: ignore
+except Exception:  # pragma: no cover
+    tqdm = None
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -56,7 +61,11 @@ def train(args: argparse.Namespace) -> None:
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
 
     env = PyBulletTrackEnv(headless=args.headless)
-    eval_env = PyBulletTrackEnv(headless=args.headless)
+    # PyBullet 在同一进程内只能开一个 GUI 物理服务器。
+    # 因为本项目目前没有给 pybullet API 显式传 physicsClientId，
+    # 多开第二个 env 可能会互相抢占当前 client。
+    # 因此：GUI 模式下复用训练 env；headless 模式下再单独开 eval env。
+    eval_env = env if not args.headless else PyBulletTrackEnv(headless=True)
 
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
@@ -80,18 +89,26 @@ def train(args: argparse.Namespace) -> None:
     ep_num = 0
     best_eval = -1e18
 
+    pbar = (
+        tqdm(total=args.steps, desc="TD3 training", dynamic_ncols=True)
+        if tqdm is not None
+        else None
+    )
+    writer = pbar.write if pbar is not None else print
+
     for t in range(1, args.steps + 1):
         explore = args.explore_noise if t > args.start_steps else args.explore_noise_high
         action = agent.select_action(obs, explore_noise=explore)
         next_obs, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
-        buffer.add(obs, action, reward, next_obs, float(terminated))
+        # For TD learning, treat both success-termination and time-truncation as terminal.
+        buffer.add(obs, action, reward, next_obs, float(done))
 
         ep_reward += reward
         if done:
             ep_num += 1
             if ep_num % args.log_every_ep == 0:
-                print(f"episode {ep_num} step {t} ep_return {ep_reward:.2f}")
+                writer(f"episode {ep_num} step {t} ep_return {ep_reward:.2f}")
             ep_reward = 0.0
             obs, _ = env.reset(seed=args.seed + t)
         else:
@@ -101,20 +118,38 @@ def train(args: argparse.Namespace) -> None:
             batch = buffer.sample(args.batch_size)
             losses = agent.update(batch)
             if t % args.log_every_step == 0:
-                print(
-                    f"step {t} critic {losses['critic_loss']:.4f} actor {losses['actor_loss']:.4f}"
-                )
+                actor_updated = bool(losses.get("actor_updated", 0.0))
+                if actor_updated:
+                    writer(
+                        f"step {t} critic {losses['critic_loss']:.4f} actor {losses['actor_loss']:.4f}"
+                    )
+                else:
+                    writer(f"step {t} critic {losses['critic_loss']:.4f} actor (skip)")
+                if pbar is not None:
+                    pbar.set_postfix(
+                        critic=f"{losses['critic_loss']:.4f}",
+                        actor=f"{losses['actor_loss']:.4f}" if actor_updated else "-",
+                    )
 
         if t % args.eval_every == 0 and t > 0:
             mean_ret, succ_rate = evaluate(eval_env, agent, args.eval_episodes, seed=args.seed + 999)
-            print(f"eval @ {t}: mean_return {mean_ret:.2f} success_rate {succ_rate:.2f}")
+            writer(f"eval @ {t}: mean_return {mean_ret:.2f} success_rate {succ_rate:.2f}")
+            if eval_env is env:
+                # Evaluation resets env state; refresh `obs` for training continuity.
+                obs, _ = env.reset(seed=args.seed + t)
             if mean_ret > best_eval:
                 best_eval = mean_ret
                 agent.save(str(best_path))
             agent.save(str(last_path))
 
+        if pbar is not None:
+            pbar.update(1)
+
     env.close()
-    eval_env.close()
+    if eval_env is not env:
+        eval_env.close()
+    if pbar is not None:
+        pbar.close()
     print(f"Training finished. Best checkpoint: {best_path}")
 
 
@@ -148,9 +183,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start-steps", type=int, default=5_000, help="Higher exploration noise until this many steps")
     p.add_argument("--explore-noise", type=float, default=0.1)
     p.add_argument("--explore-noise-high", type=float, default=0.25)
-    p.add_argument("--eval-every", type=int, default=4_000)
+    p.add_argument("--eval-every", type=int, default=10000)
     p.add_argument("--eval-episodes", type=int, default=5)
-    p.add_argument("--log-every-step", type=int, default=2_000)
+    p.add_argument("--log-every-step", type=int, default=100)
     p.add_argument("--log-every-ep", type=int, default=10)
     p.add_argument("--eval-only", action="store_true")
     p.add_argument("--checkpoint", type=str, default="td3_best.pt")

@@ -75,8 +75,10 @@ class TD3Agent:
         critic_loss.backward()
         self.critic_optimizer.step()
 
+        actor_updated = False
         actor_loss_v = 0.0
         if self.total_it % self.policy_delay == 0:
+            actor_updated = True
             na = self.actor(s)
             actor_loss = -self.critic.q1_forward(s, na).mean()
             self.actor_optimizer.zero_grad()
@@ -90,6 +92,7 @@ class TD3Agent:
         return {
             "critic_loss": float(critic_loss.detach().cpu()),
             "actor_loss": actor_loss_v,
+            "actor_updated": float(actor_updated),  # keep as float for easy logging
         }
 
     def _soft_update(self, src: torch.nn.Module, tgt: torch.nn.Module) -> None:
