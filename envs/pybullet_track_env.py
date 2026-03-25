@@ -10,6 +10,11 @@ import numpy as np
 import pybullet as p
 from gymnasium import spaces
 
+try:
+    import pybullet_data
+except ModuleNotFoundError:  # pragma: no cover
+    pybullet_data = None  # type: ignore[assignment]
+
 
 def _joint_index_by_name(body_id: int, name: str) -> int:
     for i in range(p.getNumJoints(body_id)):
@@ -19,6 +24,18 @@ def _joint_index_by_name(body_id: int, name: str) -> int:
         if jn == name:
             return i
     raise ValueError(f"Joint {name!r} not found on body {body_id}")
+
+
+def _joint_index_by_any_name(body_id: int, candidates: list[str]) -> int:
+    """Return first joint index matching any of `candidates`."""
+    last_err: Optional[ValueError] = None
+    for name in candidates:
+        try:
+            return _joint_index_by_name(body_id, name)
+        except ValueError as e:
+            last_err = e
+    assert last_err is not None
+    raise last_err
 
 
 class PyBulletTrackEnv(gym.Env):
@@ -67,7 +84,15 @@ class PyBulletTrackEnv(gym.Env):
             return
         mode = p.DIRECT if self.headless else p.GUI
         self._client = p.connect(mode)
-        p.setAdditionalSearchPath(p.getDataPath())
+        # `pybullet.getDataPath()` 在部分版本里不存在。
+        if hasattr(p, "getDataPath"):
+            p.setAdditionalSearchPath(p.getDataPath())  # type: ignore[attr-defined]
+        else:
+            if pybullet_data is None:
+                raise ModuleNotFoundError(
+                    "pybullet_data is required for loading URDFs like plane.urdf/racecar.urdf"
+                )
+            p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -10)
         p.loadURDF("plane.urdf")
         start_pos = [0.0, 0.0, 0.1]
@@ -78,14 +103,26 @@ class PyBulletTrackEnv(gym.Env):
         assert self._car_id is not None
 
         # Drive rear wheels; center steering for differential-style control.
-        for jn in ("left_steering_hinge", "right_steering_hinge"):
+        for jn_candidates in [
+            ["left_steering_hinge_joint", "left_steering_hinge"],
+            ["right_steering_hinge_joint", "right_steering_hinge"],
+        ]:
             try:
-                self._steering_joints.append(_joint_index_by_name(self._car_id, jn))
+                self._steering_joints.append(
+                    _joint_index_by_any_name(self._car_id, jn_candidates)
+                )
             except ValueError:
                 pass
+        # Prefer rear wheels for racecar (PyBullet's default URDF).
         self._drive_joints = (
-            _joint_index_by_name(self._car_id, "left_wheel"),
-            _joint_index_by_name(self._car_id, "right_wheel"),
+            _joint_index_by_any_name(
+                self._car_id,
+                ["left_rear_wheel_joint", "left_wheel_joint", "left_wheel"],
+            ),
+            _joint_index_by_any_name(
+                self._car_id,
+                ["right_rear_wheel_joint", "right_wheel_joint", "right_wheel"],
+            ),
         )
 
         vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.18, rgbaColor=[0.1, 0.85, 0.2, 0.9])

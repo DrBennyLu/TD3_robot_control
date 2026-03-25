@@ -47,7 +47,9 @@ class TD3Agent:
 
     def select_action(self, state: np.ndarray, explore_noise: float = 0.0) -> np.ndarray:
         s = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
-        a = self.actor(s).cpu().numpy()[0]
+        # Action selection should not track gradients (otherwise `.numpy()` will fail).
+        with torch.no_grad():
+            a = self.actor(s).cpu().numpy()[0]
         if explore_noise > 0:
             a = a + np.random.normal(0, explore_noise, size=a.shape)
         return np.clip(a, -self.max_action, self.max_action)

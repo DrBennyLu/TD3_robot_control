@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +22,7 @@ if str(ROOT) not in sys.path:
 from envs.pybullet_track_env import PyBulletTrackEnv
 
 
-def run_smoke_test(steps: int, headless: bool, seed: int) -> int:
+def run_smoke_test(steps: int, headless: bool, seed: int, sleep_per_step: float) -> int:
     env = PyBulletTrackEnv(headless=headless)
     try:
         obs, _ = env.reset(seed=seed)
@@ -50,6 +51,11 @@ def run_smoke_test(steps: int, headless: bool, seed: int) -> int:
             if terminated or truncated:
                 obs, _ = env.reset()
 
+            if not headless and sleep_per_step > 0:
+                # For the default env: dt=1/240 and stepSimulation is called 12 times.
+                # That means ~0.05s of simulated time per `env.step()`.
+                time.sleep(sleep_per_step)
+
         print("[PASS] PyBulletTrackEnv smoke test succeeded")
         print(f"steps={steps} total_reward={total_reward:.3f} term={term_count} trunc={trunc_count}")
         if "distance" in info:
@@ -67,12 +73,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=120, help="Simulation steps to run")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--gui", action="store_true", help="Run with PyBullet GUI")
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep per env step (only applies in --gui mode)",
+    )
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        help="Sleep ~0.05s per env step to approximate real-time in default env",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    code = run_smoke_test(steps=args.steps, headless=not args.gui, seed=args.seed)
+    sleep_per_step = 0.05 if args.realtime else float(args.sleep)
+    code = run_smoke_test(
+        steps=args.steps,
+        headless=not args.gui,
+        seed=args.seed,
+        sleep_per_step=sleep_per_step,
+    )
     raise SystemExit(code)
 
 
